@@ -9,12 +9,12 @@ import shutil
 from pathlib import Path
 from PyPDF2 import PdfReader
 import re
+import pyzipper
 
 # Setup logging
 logging.basicConfig(filename='log.txt', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 VIRUSTOTAL_API_KEY = 'cb22c177cf5a39cb15051d22831a8d07c2ca491a997a6cc530a17758f1458fec'  # Replace with your actual VirusTotal API key
-
 
 def get_file_path():
     print("Welcome to the ZIP Security Analysis Tool")
@@ -24,7 +24,6 @@ def get_file_path():
     if not path.endswith('.zip'):
         raise ValueError("The file is not a ZIP file.")
     return path
-
 
 def requires_password(zip_path):
     with zipfile.ZipFile(zip_path) as zf:
@@ -36,7 +35,6 @@ def requires_password(zip_path):
         except Exception as e:
             logging.error(f"Unexpected error when checking password requirement: {str(e)}")
             raise e
-
 
 def check_zip_password(zip_path, password_file):
     start_time = time.time()
@@ -57,7 +55,6 @@ def check_zip_password(zip_path, password_file):
     print("Password not found in the list.")
     logging.info("Password not found in the list.")
     return None
-
 
 def unzip_and_checksum(zip_path, password):
     checksums = {}
@@ -82,7 +79,6 @@ def unzip_and_checksum(zip_path, password):
             raise e
     return file_list, checksums
 
-
 def virustotal_check(file_hash):
     url = f"https://www.virustotal.com/vtapi/v2/file/report?apikey={VIRUSTOTAL_API_KEY}&resource={file_hash}"
     response = requests.get(url)
@@ -95,7 +91,6 @@ def virustotal_check(file_hash):
     else:
         return 'N/A'
 
-
 def search_keywords(content):
     keywords = ['PESEL', 'password']
     counts = {key: 0 for key in keywords}
@@ -104,7 +99,6 @@ def search_keywords(content):
         counts[keyword] = len(re.findall(keyword, content, re.IGNORECASE))
     emails.update(re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', content))
     return {'keywords': counts, 'emails': list(emails)}
-
 
 def generate_report(checksums, keywords_report, file_list, zip_password):
     report = []
@@ -147,7 +141,6 @@ def generate_report(checksums, keywords_report, file_list, zip_password):
     logging.info("Report and checksum generated successfully.")
     return report_path, 'hash.txt'
 
-
 def clean_up(paths):
     for path in paths:
         try:
@@ -157,7 +150,6 @@ def clean_up(paths):
                 shutil.rmtree(path)
         except Exception as e:
             logging.error(f"Error removing {path}: {str(e)}")
-
 
 def main():
     try:
@@ -208,10 +200,13 @@ def main():
         # Generate report and obtain checksum
         report_file, hash_file = generate_report(checksums, keywords_report, file_list, password)
 
-        # Repack all items into a new ZIP file
+        # Repack all items into a new ZIP file with password protection
         final_zip_path = os.path.join(os.path.expanduser('~'), 'Downloads', 'Final_Raport.zip')
+        zip_password = b'P4$$w0rd!'  # Define your password here as bytes
+
         try:
-            with zipfile.ZipFile(final_zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+            with pyzipper.AESZipFile(final_zip_path, 'w', compression=pyzipper.ZIP_DEFLATED, encryption=pyzipper.WZ_AES) as zf:
+                zf.setpassword(zip_password)
                 for file in file_list:
                     try:
                         full_file_path = os.path.join('unzipped_files', file)
@@ -237,7 +232,6 @@ def main():
     except Exception as e:
         logging.error(f"An error occurred: {str(e)}")
         print(f"An error occurred: {e}")
-
 
 if __name__ == "__main__":
     main()
