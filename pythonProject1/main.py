@@ -6,7 +6,6 @@ import time
 import logging
 import json
 import shutil
-from pathlib import Path
 from PyPDF2 import PdfReader
 import re
 import pyzipper
@@ -20,12 +19,15 @@ def get_file_path():
     print("Welcome to the ZIP Security Analysis Tool")
     path = input("Enter the path to the ZIP file: ")
     if not os.path.exists(path):
+        logging.info("Got path from user")
         raise FileNotFoundError("The specified file does not exist.")
     if not path.endswith('.zip'):
+        logging.error(f"The file {path} is not a ZIP file.")
         raise ValueError("The file is not a ZIP file.")
     return path
 
 def requires_password(zip_path):
+    logging.info(f"Checking if {zip_path} needs password")
     with zipfile.ZipFile(zip_path) as zf:
         try:
             zf.extractall(pwd=None, path='unzipped_files')
@@ -38,12 +40,14 @@ def requires_password(zip_path):
 
 def check_zip_password(zip_path, password_file):
     start_time = time.time()
+    logging.info(f"Checking passwords for {zip_path} from {password_file}")
     with open(password_file, 'r') as file:
         passwords = file.readlines()
 
     with zipfile.ZipFile(zip_path) as zf:
         for password in passwords:
             try:
+                logging.info(f"Checking password : {password} ")
                 zf.setpassword(password.strip().encode())
                 zf.testzip()  # If no exception, password is correct
                 duration = time.time() - start_time
@@ -51,6 +55,7 @@ def check_zip_password(zip_path, password_file):
                 logging.info(f"Password found: {password.strip()} in {duration:.2f} seconds")
                 return password.strip()
             except RuntimeError:
+                logging.error(f"Password is incorrect")
                 continue
     print("Password not found in the list.")
     logging.info("Password not found in the list.")
@@ -63,6 +68,7 @@ def unzip_and_checksum(zip_path, password):
         zf.setpassword(password.encode() if password else None)
         try:
             zf.extractall(path='unzipped_files')
+            logging.info(f"Extracting all files in zipfile to unzipped_files")
             file_list = zf.namelist()
             for file in file_list:
                 try:
@@ -70,6 +76,7 @@ def unzip_and_checksum(zip_path, password):
                         data = f.read()
                         checksum = hashlib.sha256(data).hexdigest()
                         checksums[file] = checksum
+                        logging.info(f"Checksums generated for : {file}")
                 except Exception as e:
                     logging.error(f"Error reading file {file} from zip: {str(e)}")
                     continue
@@ -96,7 +103,9 @@ def search_keywords(content):
     counts = {key: 0 for key in keywords}
     emails = set()
     for keyword in keywords:
+        logging.info(f"Searching {keyword}")
         counts[keyword] = len(re.findall(keyword, content, re.IGNORECASE))
+    logging.info(f"Searching for emails")
     emails.update(re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', content))
     return {'keywords': counts, 'emails': list(emails)}
 
@@ -171,6 +180,7 @@ def main():
         for file in file_list:
             file_path = os.path.join('unzipped_files', file)
             try:
+                logging.info(f"Searching for keywords in file {file_path}")
                 with open(file_path, 'rb') as f:
                     content = f.read()
                     # Try to decode the content if it's a text-based file
@@ -199,26 +209,33 @@ def main():
 
         # Generate report and obtain checksum
         report_file, hash_file = generate_report(checksums, keywords_report, file_list, password)
+        logging.debug(f"Generated report file: {report_file}")
+        logging.debug(f"Generated hash file: {hash_file}")
 
         # Repack all items into a new ZIP file with password protection
         final_zip_path = os.path.join(os.path.expanduser('~'), 'Downloads', 'Final_Raport.zip')
-        zip_password = b'P4$$w0rd!'  # Define your password here as bytes
+        zip_password = b'P4$$w0rd!'  # Define password as bytes
 
         try:
             with pyzipper.AESZipFile(final_zip_path, 'w', compression=pyzipper.ZIP_DEFLATED, encryption=pyzipper.WZ_AES) as zf:
                 zf.setpassword(zip_password)
+                logging.info(f"Setting password to {zip_password}")
                 for file in file_list:
                     try:
                         full_file_path = os.path.join('unzipped_files', file)
                         if os.path.exists(full_file_path):
                             zf.write(full_file_path, arcname=file)
+                            logging.info(f"Added file to zipped file: {full_file_path}")
                         else:
                             logging.error(f"File not found: {full_file_path}")
                     except Exception as e:
                         logging.error(f"Error adding file {file} to zip: {str(e)}")
                 zf.write(report_file, arcname='report_summary.txt')
+                logging.info(f"Added file to zipped file: {report_file}")
                 zf.write(hash_file, arcname='hash.txt')
+                logging.info(f"Added file to zipped file: {hash_file}")
                 zf.write('log.txt', arcname='log.txt')
+                logging.info(f"Added file to zipped file: log.txt")
         except Exception as e:
             logging.error(f"Error creating final zip file: {str(e)}")
             raise e
@@ -228,6 +245,7 @@ def main():
         clean_up([os.path.join('unzipped_files', file) for file in file_list] + [report_file, hash_file, 'log.txt'])
         if os.path.exists('unzipped_files'):
             shutil.rmtree('unzipped_files')
+        logging.info(f"Cleaned up unzipped files and created files")
 
     except Exception as e:
         logging.error(f"An error occurred: {str(e)}")
