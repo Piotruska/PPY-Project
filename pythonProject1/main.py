@@ -9,22 +9,210 @@ import shutil
 from PyPDF2 import PdfReader
 import re
 import pyzipper
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+from threading import Thread
 
 # Setup logging
 logging.basicConfig(filename='log.txt', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 VIRUSTOTAL_API_KEY = 'cb22c177cf5a39cb15051d22831a8d07c2ca491a997a6cc530a17758f1458fec'  # Replace with your actual VirusTotal API key
 
-def get_file_path():
-    print("Welcome to the ZIP Security Analysis Tool")
-    path = input("Enter the path to the ZIP file: ")
-    if not os.path.exists(path):
-        logging.info("Got path from user")
-        raise FileNotFoundError("The specified file does not exist.")
-    if not path.endswith('.zip'):
-        logging.error(f"The file {path} is not a ZIP file.")
-        raise ValueError("The file is not a ZIP file.")
-    return path
+class ZipSecurityAnalysisTool:
+    def __init__(self, master):
+        self.master = master
+        self.master.title("ZIP Security Analysis Tool")
+        self.master.geometry("600x500")
+        self.master.configure(bg='#2b2b2b')
+
+        self.style = ttk.Style()
+        self.style.configure("TButton", padding=6, relief="flat", background="#ccc")
+        self.style.configure("TLabel", background="#2b2b2b", foreground="#ffffff")
+        self.style.configure("TEntry", fieldbackground="#4d4d4d", foreground="#000000")
+        self.style.configure("TProgressbar", troughcolor="#2b2b2b", background="#4caf50")
+
+        self.label = ttk.Label(master, text="Choose a ZIP file to analyze:")
+        self.label.pack(pady=10)
+
+        self.choose_button = ttk.Button(master, text="Choose File", command=self.choose_file)
+        self.choose_button.pack(pady=10)
+
+        self.label_keywords = ttk.Label(master, text="Enter keywords to search (separated by commas):")
+        self.label_keywords.pack(pady=10)
+
+        self.keywords_entry = ttk.Entry(master, width=50)
+        self.keywords_entry.pack(pady=10)
+        self.keywords_entry.insert(0, "password,PESEL")
+
+        self.label_password = ttk.Label(master, text="Enter password for the final ZIP file:")
+        self.label_password.pack(pady=10)
+
+        self.password_entry = ttk.Entry(master, width=50)
+        self.password_entry.pack(pady=10)
+        self.password_entry.insert(0, "P4$$w0rd!")
+
+        self.start_button = ttk.Button(master, text="Start Scan", command=self.start_scan_thread, state=tk.DISABLED)
+        self.start_button.pack(pady=10)
+
+        self.file_path = ""
+
+    def choose_file(self):
+        self.file_path = filedialog.askopenfilename(filetypes=[("ZIP files", "*.zip")])
+        if not self.file_path:
+            return
+
+        if not self.file_path.endswith('.zip'):
+            messagebox.showerror("Error", "The selected file is not a ZIP file.")
+            return
+
+        if not os.path.exists(self.file_path):
+            messagebox.showerror("Error", "The specified file does not exist.")
+            return
+
+        self.start_button.config(state=tk.NORMAL)
+        messagebox.showinfo("File Selected", f"Selected file: {self.file_path}")
+
+    def log_message(self, message):
+        self.log_text.config(state=tk.NORMAL)
+        self.log_text.delete(1.0, tk.END)  # Clear previous message
+        self.log_text.insert(tk.END, message + "\n")
+        self.log_text.config(state=tk.DISABLED)
+        self.log_text.yview(tk.END)
+        self.master.update_idletasks()
+        time.sleep(1)  # Wait for a second before proceeding
+
+    def start_scan_thread(self):
+        self.log_window = tk.Toplevel(self.master)
+        self.log_window.title("Scanning...")
+        self.log_window.geometry("600x400")
+        self.log_window.configure(bg='#2b2b2b')
+
+        self.progress = ttk.Progressbar(self.log_window, orient="horizontal", length=500, mode="indeterminate")
+        self.progress.pack(pady=10)
+
+        self.log_text = tk.Text(self.log_window, height=15, state=tk.DISABLED, bg='#4d4d4d', fg='#000000')
+        self.log_text.pack(pady=10)
+
+        self.progress.start()
+        thread = Thread(target=self.start_scan)
+        thread.start()
+
+    def start_scan(self):
+        try:
+            keywords = self.keywords_entry.get()
+            if not keywords:
+                keywords = "password,PESEL"
+            keywords_list = [kw.strip() for kw in keywords.split(",")]
+
+            password_file = '10k-most-common.txt'  # Adjust to your path
+            self.log_message("Starting scan...")
+
+            password_required = requires_password(self.file_path)
+            if password_required:
+                self.log_message("ZIP file requires a password.")
+                password = check_zip_password(self.file_path, password_file)
+                if not password:
+                    messagebox.showerror("Error", "Could not open the ZIP file as the password was not found.")
+                    self.progress.stop()
+                    self.log_window.destroy()
+                    return
+            else:
+                password = None
+
+            self.log_message("Unzipping files")
+            file_list, checksums = unzip_and_checksum(self.file_path, password)
+
+            keywords_report = {}
+            for file in file_list:
+                file_path = os.path.join('unzipped_files', file)
+                try:
+                    logging.info(f"Searching for keywords in file {file_path}")
+                    self.log_message(f"Searching for keywords in file {file_path}")
+                    with open(file_path, 'rb') as f:
+                        content = f.read()
+                        try:
+                            text_content = content.decode('utf-8')
+                            keywords_report[file] = search_keywords(text_content, keywords_list)
+                        except UnicodeDecodeError:
+                            if file.endswith('.pdf'):
+                                try:
+                                    reader = PdfReader(file_path)
+                                    text = ''
+                                    for page in reader.pages:
+                                        page_text = page.extract_text()
+                                        if page_text:
+                                            text += page_text
+                                    keywords_report[file] = search_keywords(text, keywords_list)
+                                except Exception as e:
+                                    logging.error(f"Error processing PDF {file}: {str(e)}")
+                                    self.log_message(f"Error processing PDF {file}: {str(e)}")
+                            keywords_report[file] = {'keywords': {}, 'emails': []}
+                except Exception as e:
+                    logging.error(f"Error reading file {file}: {str(e)}")
+                    self.log_message(f"Error reading file {file}: {str(e)}")
+
+            logging.debug(f"Full keywords report: {json.dumps(keywords_report, indent=2)}")
+            self.log_message(f"Full keywords report: {json.dumps(keywords_report, indent=2)}")
+
+            self.log_message("Generating report...")
+            report_file, hash_file = generate_report(checksums, keywords_report, file_list, password)
+            logging.debug(f"Generated report file: {report_file}")
+            self.log_message(f"Generated report file: {report_file}")
+            logging.debug(f"Generated hash file: {hash_file}")
+            self.log_message(f"Generated hash file: {hash_file}")
+
+            final_zip_password = self.password_entry.get().encode()
+
+            final_zip_path = os.path.join(os.path.expanduser('~'), 'Downloads', 'Final_Report.zip')
+
+            self.log_message("Creating final encrypted ZIP file...")
+            try:
+                with pyzipper.AESZipFile(final_zip_path, 'w', compression=pyzipper.ZIP_DEFLATED, encryption=pyzipper.WZ_AES) as zf:
+                    zf.setpassword(final_zip_password)
+                    logging.info(f"Setting password to {final_zip_password}")
+                    self.log_message(f"Setting password to {final_zip_password}")
+                    for file in file_list:
+                        try:
+                            full_file_path = os.path.join('unzipped_files', file)
+                            if os.path.exists(full_file_path):
+                                zf.write(full_file_path, arcname=file)
+                                logging.info(f"Added file to zipped file: {full_file_path}")
+                                self.log_message(f"Added file to zipped file: {full_file_path}")
+                            else:
+                                logging.error(f"File not found: {full_file_path}")
+                                self.log_message(f"File not found: {full_file_path}")
+                        except Exception as e:
+                            logging.error(f"Error adding file {file} to zip: {str(e)}")
+                            self.log_message(f"Error adding file {file} to zip: {str(e)}")
+                    zf.write(report_file, arcname='report_summary.txt')
+                    logging.info(f"Added file to zipped file: {report_file}")
+                    self.log_message(f"Added file to zipped file: {report_file}")
+                    zf.write(hash_file, arcname='hash.txt')
+                    logging.info(f"Added file to zipped file: {hash_file}")
+                    self.log_message(f"Added file to zipped file: {hash_file}")
+                    zf.write('log.txt', arcname='log.txt')
+                    logging.info(f"Added file to zipped file: log.txt")
+                    self.log_message(f"Added file to zipped file: log.txt")
+            except Exception as e:
+                logging.error(f"Error creating final zip file: {str(e)}")
+                self.log_message(f"Error creating final zip file: {str(e)}")
+                raise e
+
+            messagebox.showinfo("Success", f"All files re-zipped and stored in {final_zip_path}.")
+            self.log_message("Scan completed successfully.")
+
+            clean_up([os.path.join('unzipped_files', file) for file in file_list] + [report_file, hash_file, 'log.txt'])
+            if os.path.exists('unzipped_files'):
+                shutil.rmtree('unzipped_files')
+            logging.info(f"Cleaned up unzipped files and created files")
+            self.log_message(f"Cleaned up unzipped files and created files")
+        except Exception as e:
+            logging.error(f"An error occurred: {str(e)}")
+            self.log_message(f"An error occurred: {str(e)}")
+            messagebox.showerror("Error", f"An error occurred: {e}")
+        finally:
+            self.progress.stop()
+            self.log_window.destroy()
 
 def requires_password(zip_path):
     logging.info(f"Checking if {zip_path} needs password")
@@ -49,7 +237,7 @@ def check_zip_password(zip_path, password_file):
             try:
                 logging.info(f"Checking password : {password} ")
                 zf.setpassword(password.strip().encode())
-                zf.testzip()  # If no exception, password is correct
+                zf.testzip()
                 duration = time.time() - start_time
                 print(f"Password found: {password.strip()}, Time taken: {duration:.2f} seconds")
                 logging.info(f"Password found: {password.strip()} in {duration:.2f} seconds")
@@ -98,8 +286,7 @@ def virustotal_check(file_hash):
     else:
         return 'N/A'
 
-def search_keywords(content):
-    keywords = ['PESEL', 'password']
+def search_keywords(content, keywords):
     counts = {key: 0 for key in keywords}
     emails = set()
     for keyword in keywords:
@@ -134,12 +321,10 @@ def generate_report(checksums, keywords_report, file_list, zip_password):
                 report.append(f"{email}")
         report.append("\n" + "." * 120 + "\n")
 
-    # Write the report to a text file
     report_path = 'report_summary.txt'
     with open(report_path, 'w') as f:
         f.write("\n".join(report))
 
-    # Generate and save the checksum of the report
     with open(report_path, 'rb') as f:
         report_data = f.read()
         report_checksum = hashlib.sha256(report_data).hexdigest()
@@ -160,96 +345,7 @@ def clean_up(paths):
         except Exception as e:
             logging.error(f"Error removing {path}: {str(e)}")
 
-def main():
-    try:
-        zip_path = get_file_path()
-        password_file = '10k-most-common.txt'  # Adjust to your path
-        password_required = requires_password(zip_path)
-        if password_required:
-            password = check_zip_password(zip_path, password_file)
-            if not password:
-                print("Could not open the ZIP file as the password was not found.")
-                return
-        else:
-            password = None
-
-        file_list, checksums = unzip_and_checksum(zip_path, password)
-
-        # Process each file for keywords
-        keywords_report = {}
-        for file in file_list:
-            file_path = os.path.join('unzipped_files', file)
-            try:
-                logging.info(f"Searching for keywords in file {file_path}")
-                with open(file_path, 'rb') as f:
-                    content = f.read()
-                    # Try to decode the content if it's a text-based file
-                    try:
-                        text_content = content.decode('utf-8')
-                        keywords_report[file] = search_keywords(text_content)
-                    except UnicodeDecodeError:
-                        if file.endswith('.pdf'):
-                            try:
-                                reader = PdfReader(file_path)
-                                text = ''
-                                for page in reader.pages:
-                                    page_text = page.extract_text()
-                                    if page_text:
-                                        text += page_text
-                                keywords_report[file] = search_keywords(text)
-                            except Exception as e:
-                                logging.error(f"Error processing PDF {file}: {str(e)}")
-                        # For non-text files, no keyword report is generated
-                        keywords_report[file] = {'keywords': {}, 'emails': []}
-            except Exception as e:
-                logging.error(f"Error reading file {file}: {str(e)}")
-
-        # Debugging: log the full keywords_report
-        logging.debug(f"Full keywords report: {json.dumps(keywords_report, indent=2)}")
-
-        # Generate report and obtain checksum
-        report_file, hash_file = generate_report(checksums, keywords_report, file_list, password)
-        logging.debug(f"Generated report file: {report_file}")
-        logging.debug(f"Generated hash file: {hash_file}")
-
-        # Repack all items into a new ZIP file with password protection
-        final_zip_path = os.path.join(os.path.expanduser('~'), 'Downloads', 'Final_Raport.zip')
-        zip_password = b'P4$$w0rd!'  # Define password as bytes
-
-        try:
-            with pyzipper.AESZipFile(final_zip_path, 'w', compression=pyzipper.ZIP_DEFLATED, encryption=pyzipper.WZ_AES) as zf:
-                zf.setpassword(zip_password)
-                logging.info(f"Setting password to {zip_password}")
-                for file in file_list:
-                    try:
-                        full_file_path = os.path.join('unzipped_files', file)
-                        if os.path.exists(full_file_path):
-                            zf.write(full_file_path, arcname=file)
-                            logging.info(f"Added file to zipped file: {full_file_path}")
-                        else:
-                            logging.error(f"File not found: {full_file_path}")
-                    except Exception as e:
-                        logging.error(f"Error adding file {file} to zip: {str(e)}")
-                zf.write(report_file, arcname='report_summary.txt')
-                logging.info(f"Added file to zipped file: {report_file}")
-                zf.write(hash_file, arcname='hash.txt')
-                logging.info(f"Added file to zipped file: {hash_file}")
-                zf.write('log.txt', arcname='log.txt')
-                logging.info(f"Added file to zipped file: log.txt")
-        except Exception as e:
-            logging.error(f"Error creating final zip file: {str(e)}")
-            raise e
-        print(f"All files re-zipped and stored in {final_zip_path}.")
-
-        # Clean up temporary files and directories
-        clean_up([os.path.join('unzipped_files', file) for file in file_list] + [report_file, hash_file, 'log.txt'])
-        if os.path.exists('unzipped_files'):
-            shutil.rmtree('unzipped_files')
-        logging.info(f"Cleaned up unzipped files and created files")
-
-    except Exception as e:
-        logging.error(f"An error occurred: {str(e)}")
-        print(f"An error occurred: {e}")
-
 if __name__ == "__main__":
-    main()
+    root = tk.Tk()
+    app = ZipSecurityAnalysisTool(root)
+    root.mainloop()
